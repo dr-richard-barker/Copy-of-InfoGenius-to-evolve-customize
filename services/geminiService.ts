@@ -1,16 +1,16 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
 */
 import { GoogleGenAI, Modality } from "@google/genai";
-import { AspectRatio, ComplexityLevel, VisualStyle, ResearchResult, SearchResultItem, Language } from "../types";
+import { AspectRatio, ComplexityLevel, VisualStyle, ResearchResult, SearchResultItem, Language, ColorScheme, BackgroundColor } from "../types";
 
 // Create a fresh client for every request to ensure the latest API key from process.env.API_KEY is used
 const getAi = () => {
   return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
-// Updated to use 'gemini-3-pro-image-preview' for all operations including search grounding and image generation as requested
 const TEXT_MODEL = 'gemini-3-pro-preview';
 const IMAGE_MODEL = 'gemini-3-pro-image-preview';
 const EDIT_MODEL = 'gemini-3-pro-image-preview';
@@ -43,15 +43,42 @@ const getStyleInstruction = (style: VisualStyle): string => {
   }
 };
 
+const getColorInstruction = (color: ColorScheme): string => {
+  switch (color) {
+    case 'Black & White': return "Color Palette: Strict high-contrast black text on a clean white background. No colors, only gray-scale if needed for shading.";
+    case 'Vibrant (Red/Blue/Green/Yellow)': return "Color Palette: Bold and vibrant colors including primary red, blue, green, yellow, and purple. Use colorful gradients to distinguish sections.";
+    case 'Pastel Soft': return "Color Palette: Muted pastel tones. Soft pinks, mint greens, and lavender. High readability with low eye strain.";
+    case 'Professional Earth Tones': return "Color Palette: Professional corporate earth tones. Deep blues, forest greens, and rich browns. Sophisticated and authoritative.";
+    case 'Dark UI (Neon & Gradients)': return "Color Palette: Dark mode interface. Deep navy or black background with neon cyan, magenta, and lime accents. Use glassmorphism and glowing gradients.";
+    default: return "Color Palette: Balanced natural scientific colors suitable for the topic.";
+  }
+};
+
+const getBackgroundInstruction = (bg: BackgroundColor): string => {
+  switch (bg) {
+    case 'Pure White': return "Background: Solid, uniform, flat pure white background (#FFFFFF). Minimal shadows.";
+    case 'Solid Black': return "Background: Solid, uniform deep black background (#000000). High contrast for foreground elements.";
+    case 'Deep Navy': return "Background: Uniform dark navy blue background. Professional and deep.";
+    case 'Neutral Gray': return "Background: Neutral medium gray background. Reduces glare, modern look.";
+    case 'Parchment/Cream': return "Background: Aged parchment or light cream texture. Warm and classical feel.";
+    case 'Translucent Glass': return "Background: Frosted glass or translucent blurred abstract background. Modern UI aesthetic.";
+    default: return "Background: Clean, appropriate solid background that enhances visibility.";
+  }
+};
+
 export const researchTopicForPrompt = async (
   topic: string, 
   level: ComplexityLevel, 
   style: VisualStyle,
-  language: Language
+  language: Language,
+  colorScheme: ColorScheme = 'Default',
+  backgroundColor: BackgroundColor = 'Default'
 ): Promise<ResearchResult> => {
   
   const levelInstr = getLevelInstruction(level);
   const styleInstr = getStyleInstruction(style);
+  const colorInstr = getColorInstruction(colorScheme);
+  const bgInstr = getBackgroundInstruction(backgroundColor);
 
   const systemPrompt = `
     You are an expert visual researcher.
@@ -62,6 +89,8 @@ export const researchTopicForPrompt = async (
     Context:
     ${levelInstr}
     ${styleInstr}
+    ${colorInstr}
+    ${bgInstr}
     Language: ${language}
     
     Please provide your response in the following format EXACTLY:
@@ -72,7 +101,7 @@ export const researchTopicForPrompt = async (
     - [Fact 3]
     
     IMAGE_PROMPT:
-    [A highly detailed image generation prompt describing the visual composition, colors, and layout for the infographic. Do not include citations in the prompt.]
+    [A highly detailed image generation prompt describing the visual composition, colors, and layout for the infographic. Strictly adhere to the requested color scheme (${colorScheme}) and background color (${backgroundColor}). Do not include citations in the prompt.]
   `;
 
   const response = await getAi().models.generateContent({
@@ -95,7 +124,7 @@ export const researchTopicForPrompt = async (
 
   // Parse Prompt
   const promptMatch = text.match(/IMAGE_PROMPT:\s*([\s\S]*?)$/i);
-  const imagePrompt = promptMatch ? promptMatch[1].trim() : `Create a detailed infographic about ${topic}. ${levelInstr} ${styleInstr}`;
+  const imagePrompt = promptMatch ? promptMatch[1].trim() : `Create a detailed infographic about ${topic}. ${levelInstr} ${styleInstr} ${colorInstr} ${bgInstr}`;
 
   // Extract Grounding (Search Results)
   const searchResults: SearchResultItem[] = [];
@@ -123,7 +152,6 @@ export const researchTopicForPrompt = async (
 };
 
 export const generateInfographicImage = async (prompt: string): Promise<string> => {
-  // Use Gemini 3 Pro Image Preview for generation
   const response = await getAi().models.generateContent({
     model: IMAGE_MODEL,
     contents: {
@@ -139,51 +167,6 @@ export const generateInfographicImage = async (prompt: string): Promise<string> 
     return `data:image/png;base64,${part.inlineData.data}`;
   }
   throw new Error("Failed to generate image");
-};
-
-export const verifyInfographicAccuracy = async (
-  imageBase64: string, 
-  topic: string,
-  level: ComplexityLevel,
-  style: VisualStyle,
-  language: Language
-): Promise<{ isAccurate: boolean; critique: string }> => {
-  
-  // Bypassing verification to send straight to image generation
-  return {
-    isAccurate: true,
-    critique: "Verification bypassed."
-  };
-};
-
-export const fixInfographicImage = async (currentImageBase64: string, correctionPrompt: string): Promise<string> => {
-  const cleanBase64 = currentImageBase64.replace(/^data:image\/(png|jpeg|jpg);base64,/, '');
-
-  const prompt = `
-    Edit this image. 
-    Goal: Simplify and Fix.
-    Instruction: ${correctionPrompt}.
-    Ensure the design is clean and any text is large and legible.
-  `;
-
-  const response = await getAi().models.generateContent({
-    model: EDIT_MODEL,
-    contents: {
-      parts: [
-        { inlineData: { mimeType: 'image/jpeg', data: cleanBase64 } },
-        { text: prompt }
-      ]
-    },
-    config: {
-      responseModalities: [Modality.IMAGE],
-    }
-  });
-
-  const part = response.candidates?.[0]?.content?.parts?.[0];
-  if (part && part.inlineData && part.inlineData.data) {
-    return `data:image/png;base64,${part.inlineData.data}`;
-  }
-  throw new Error("Failed to fix image");
 };
 
 export const editInfographicImage = async (currentImageBase64: string, editInstruction: string): Promise<string> => {
